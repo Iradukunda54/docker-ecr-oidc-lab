@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Private ECR repository and a least-privilege IAM role that GitHub Actions
+  assumes via OIDC to build and push container images. No long-lived AWS
+  credentials are used.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Description: GitHub organization or username that owns the repository.
+  GitHubRepo:
+    Type: String
+    Description: Name of the GitHub repository allowed to assume this role.
+  EcrRepositoryName:
+    Type: String
+    Description: Name of the private ECR repository to create.
+    Default: node-api
+  Owner:
+    Type: String
+    Description: Owner tag applied to created resources.
+
+Resources:
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref EcrRepositoryName
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 7 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep only the last 20 tagged images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["kevineiradukunda"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 20
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: docker-ecr-oidc-lab
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  GitHubActionsEcrPushRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-ecr-push
+      Description: Assumed by GitHub Actions via OIDC to push images to a single ECR repository.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'
+              StringLike:
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOrg}/${GitHubRepo}:*'
+      Policies:
+        - PolicyName: EcrPushToSingleRepository
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrAuthToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: EcrPushPullSingleRepo
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: !GetAtt EcrRepository.Arn
+      Tags:
+        - Key: Project
+          Value: docker-ecr-oidc-lab
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  EcrRepositoryUri:
+    Description: URI of the private ECR repository.
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepository}'
+  EcrRepositoryArn:
+    Value: !GetAtt EcrRepository.Arn
+  GitHubActionsRoleArn:
+    Description: IAM role ARN for GitHub Actions to assume via OIDC.
+    Value: !GetAtt GitHubActionsEcrPushRole.Arn

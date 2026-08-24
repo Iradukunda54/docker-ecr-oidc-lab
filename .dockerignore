@@ -1,0 +1,11 @@
+**/node_modules
+**/.git
+**/.github
+**/.qodo
+**/infrastructure
+npm-debug.log*
+Dockerfile
+.dockerignore
+.env
+.env.*
+*.md

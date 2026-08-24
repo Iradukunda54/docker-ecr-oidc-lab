@@ -1,0 +1,42 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  id-token: write   # required to request the OIDC JWT
+  contents: read    # required to checkout the repo
+
+env:
+  AWS_REGION: eu-west-1
+  ECR_REPOSITORY: node-api
+  IMAGE_TAG: kevineiradukunda_node-api
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::447558491229:role/github-actions-ecr-push
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="${REGISTRY}/${ECR_REPOSITORY}"
+          docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:${IMAGE_TAG}-${GITHUB_SHA::7}" .
+          docker push "${IMAGE}:${IMAGE_TAG}"
+          docker push "${IMAGE}:${IMAGE_TAG}-${GITHUB_SHA::7}"
