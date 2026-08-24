@@ -8,15 +8,19 @@ repository through a GitHub Actions pipeline that authenticates to AWS with
 
 ```mermaid
 flowchart LR
-    Dev[Developer git push] --> GHA[GitHub Actions workflow]
-    GHA -- "1: request OIDC JWT" --> OIDC[GitHub OIDC provider]
-    OIDC -- "2: sts:AssumeRoleWithWebIdentity" --> Role[IAM Role\ngithub-actions-ecr-push]
-    Role -- "3: temporary credentials" --> GHA
-    GHA -- "4: docker build" --> Image[node-api image]
-    Image -- "5: docker push (kevineiradukunda_node-api)" --> ECR[(Private ECR\nnode-api)]
+    Dev[Developer git push] --> GHA[GitHub Actions job]
+    GHA -- "1: mint OIDC JWT" --> GHOIDC[GitHub token endpoint]
+    GHOIDC -- "2: JWT" --> GHA
+    GHA -- "3: sts:AssumeRoleWithWebIdentity + JWT" --> STS[AWS STS]
+    STS -- "4: validate signature/audience/sub" --> Provider[IAM OIDC provider<br/>token.actions.githubusercontent.com]
+    Provider -. "trusted by (repo-scoped condition)" .-> Role[IAM Role<br/>github-actions-ecr-push]
+    STS -- "5: temporary credentials" --> GHA
+    GHA -- "6: docker build" --> Image[node-api image]
+    Image -- "7: docker push, checked against<br/>role's IAM policy + repo policy" --> ECR[(Private ECR<br/>node-api)]
 
-    subgraph AWS Account 447558491229 - eu-west-1
-        OIDC
+    subgraph aws["AWS Account 447558491229 · eu-west-1"]
+        STS
+        Provider
         Role
         ECR
     end
@@ -56,9 +60,19 @@ Provisioned via [`infrastructure/template.yaml`](infrastructure/template.yaml):
   20 tagged images, tagged with `Project` / `Owner` / `ManagedBy`.
 - **IAM role** `github-actions-ecr-push` — trust policy restricted to this
   exact GitHub repository via the `token.actions.githubusercontent.com:sub`
-  condition; permission policy limited to `ecr:GetAuthorizationToken` (`*`,
-  as required by the action) plus the push/pull actions scoped to the single
+  condition (pinned to the repository's immutable owner/repo IDs — see
+  below); permission policy limited to `ecr:GetAuthorizationToken` (`*`, as
+  required by the action) plus the push/pull actions scoped to the single
   repository ARN. No `ecr:DeleteRepository`, no IAM, no other service.
+- **ECR repository policy** — a second, independent layer that allows only
+  the `github-actions-ecr-push` role to push/pull layers on this repository,
+  regardless of what else might later be granted to it via IAM.
+
+GitHub's OIDC token embeds the numeric, immutable GitHub owner/repo IDs
+(`repo:Iradukunda54@267279209/docker-ecr-oidc-lab@1344933210:ref:...`)
+rather than the plain names once an account has ever been renamed, so the
+trust condition is pinned to those IDs — matching on names alone caused the
+first deploy to be rejected with `AccessDenied` (see below).
 
 Deploy/update it with:
 
@@ -85,11 +99,15 @@ aws cloudformation deploy \
    `-<short-sha>` variant for traceability) and pushes both tags.
 6. `set -euo pipefail` and no `continue-on-error` anywhere — any failed step
    (build, login, push) aborts the job immediately, so the pipeline fails
-   securely rather than silently continuing.
+   securely rather than silently continuing. This is not just a design
+   claim: [run #32727405949](https://github.com/Iradukunda54/docker-ecr-oidc-lab/actions/runs/32727405949)
+   is a real example — the OIDC trust condition was initially wrong, the
+   `Configure AWS credentials` step failed, and the job stopped before the
+   build or push steps ever ran.
 
 ## Deliverables
 
 - GitHub repository: https://github.com/Iradukunda54/docker-ecr-oidc-lab
-- Private ECR repository:
-  `447558491229.dkr.ecr.eu-west-1.amazonaws.com/node-api`
-  (console: ECR → Repositories → `node-api`, region `eu-west-1`)
+- Private ECR repository (console):
+  https://eu-west-1.console.aws.amazon.com/ecr/repositories/private/447558491229/node-api?region=eu-west-1
+  — image URI: `447558491229.dkr.ecr.eu-west-1.amazonaws.com/node-api:kevineiradukunda_node-api`
