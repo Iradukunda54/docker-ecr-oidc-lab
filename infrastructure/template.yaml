@@ -11,6 +11,18 @@ Parameters:
   GitHubRepo:
     Type: String
     Description: Name of the GitHub repository allowed to assume this role.
+  GitHubOrgId:
+    Type: String
+    Description: >
+      Numeric, immutable GitHub owner ID (from GET /repos/{org}/{repo} ->
+      .owner.id). GitHub's OIDC token embeds this as repo:ORG@ID/... once an
+      account has ever been renamed, so the trust condition pins to the ID
+      instead of the mutable name.
+  GitHubRepoId:
+    Type: String
+    Description: >
+      Numeric, immutable GitHub repository ID (from GET /repos/{org}/{repo}
+      -> .id), used the same way as GitHubOrgId.
   EcrRepositoryName:
     Type: String
     Description: Name of the private ECR repository to create.
@@ -82,7 +94,7 @@ Resources:
               StringEquals:
                 'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'
               StringLike:
-                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOrg}/${GitHubRepo}:*'
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOrg}@${GitHubOrgId}/${GitHubRepo}@${GitHubRepoId}:*'
       Policies:
         - PolicyName: EcrPushToSingleRepository
           PolicyDocument:
